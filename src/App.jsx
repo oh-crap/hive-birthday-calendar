@@ -100,8 +100,10 @@ async function rpcCall(node, method, params) {
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
+  const errorText = await response.text();
+  throw new Error(`HTTP ${response.status} from ${node}: ${errorText}`);
+}
+
 
   const data = await response.json();
   if (data.error) {
@@ -129,7 +131,7 @@ async function rpcCallWithFallback(method, params, preferredNode) {
 
 async function getFollowing(account, preferredNode, onProgress) {
   const following = [];
-  let start = "";
+  let start = null;
   let activeNode = preferredNode;
   const limit = 100;
 
@@ -156,6 +158,7 @@ async function getFollowing(account, preferredNode, onProgress) {
     const nextStart = batch[batch.length - 1]?.following;
     if (!nextStart || nextStart === start) break;
     start = nextStart;
+
   }
 
   return { following: [...new Set(following)], node: activeNode };

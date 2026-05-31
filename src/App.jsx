@@ -2,8 +2,33 @@
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+
+function Button({ className = "", variant, ...props }) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 ${variant === "outline" ? "bg-white text-slate-900 hover:bg-slate-50" : ""} ${className}`}
+      {...props}
+    />
+  );
+}
+
+function Card({ className = "", ...props }) {
+  return (
+    <div
+      className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}
+      {...props}
+    />
+  );
+}
+
+function CardContent({ className = "", ...props }) {
+  return (
+    <div
+      className={`p-5 ${className}`}
+      {...props}
+    />
+  );
+}
 
 const HIVE_NODES = [
   "https://api.hive.blog",

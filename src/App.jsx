@@ -1,34 +1,37 @@
-
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users } from "lucide-react";
+import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users, Cake, Activity } from "lucide-react";
+
+/* ------------------------------------------------------------------ */
+/*  UI primitives                                                      */
+/* ------------------------------------------------------------------ */
 
 function Button({ className = "", variant, ...props }) {
-  return (
-    <button
-      className={`inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60 ${variant === "outline" ? "bg-white text-slate-900 hover:bg-slate-50" : ""} ${className}`}
-      {...props}
-    />
-  );
+  const base =
+    "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold tracking-tight transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#E31337]/60";
+  const styles =
+    variant === "outline"
+      ? "border border-white/15 bg-white/5 text-zinc-100 hover:bg-white/10 hover:border-white/25 backdrop-blur"
+      : "bg-[#E31337] text-white shadow-[0_8px_24px_-8px_rgba(227,19,55,0.7)] hover:bg-[#ff2a4d] hover:shadow-[0_10px_30px_-8px_rgba(227,19,55,0.85)] active:translate-y-px";
+  return <button className={`${base} ${styles} ${className}`} {...props} />;
 }
 
 function Card({ className = "", ...props }) {
   return (
     <div
-      className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}
+      className={`rounded-2xl border border-white/10 bg-white/[0.035] shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_20px_50px_-30px_rgba(0,0,0,0.8)] backdrop-blur-xl ${className}`}
       {...props}
     />
   );
 }
 
 function CardContent({ className = "", ...props }) {
-  return (
-    <div
-      className={`p-5 ${className}`}
-      {...props}
-    />
-  );
+  return <div className={`p-5 ${className}`} {...props} />;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Hive RPC config                                                    */
+/* ------------------------------------------------------------------ */
 
 const HIVE_NODES = [
   "https://api.hive.blog",
@@ -38,25 +41,14 @@ const HIVE_NODES = [
 ];
 
 const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
 
+let rpcId = 1; // small incremental integer id — fixes the deserialize error
+
 function normalizeAccountName(value) {
-  return (value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^@/, "");
+  return (value || "").trim().toLowerCase().replace(/^@/, "");
 }
 
 function sleep(ms) {
@@ -93,21 +85,26 @@ async function rpcCall(node, method, params) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       jsonrpc: "2.0",
-      id: Date.now(),
+      id: rpcId++, // small integer, not Date.now()
       method,
       params,
     }),
   });
 
   if (!response.ok) {
-  const errorText = await response.text();
-  throw new Error(`HTTP ${response.status} from ${node}: ${errorText}`);
-}
-
+    let detail = "";
+    try {
+      detail = await response.text();
+    } catch {
+      detail = response.statusText;
+    }
+    throw new Error(`HTTP ${response.status} from ${node}: ${detail}`);
+  }
 
   const data = await response.json();
   if (data.error) {
-    throw new Error(data.error.message || "RPC error");
+    const msg = data.error.message || JSON.stringify(data.error);
+    throw new Error(`RPC error from ${node}: ${msg}`);
   }
   return data.result;
 }
@@ -131,11 +128,13 @@ async function rpcCallWithFallback(method, params, preferredNode) {
 
 async function getFollowing(account, preferredNode, onProgress) {
   const following = [];
-  let start = null;
+  let start = "";
   let activeNode = preferredNode;
   const limit = 100;
 
   while (true) {
+    // params: [account, start, follow_type, limit]
+    // start MUST be a string ("" for the first page), never null on strict nodes.
     const { result, node } = await rpcCallWithFallback(
       "condenser_api.get_following",
       [account, start, "blog", limit],
@@ -148,19 +147,20 @@ async function getFollowing(account, preferredNode, onProgress) {
 
     const newItems = batch
       .map((item) => item.following)
-      .filter(Boolean)
-      .filter((name) => name !== start);
+      .filter(Boolean);
 
     following.push(...newItems);
-    onProgress?.(`Followed accounts loaded: ${following.length}`);
+    onProgress?.(`Followed accounts loaded: ${new Set(following).size}`);
 
     if (batch.length < limit) break;
+
     const nextStart = batch[batch.length - 1]?.following;
     if (!nextStart || nextStart === start) break;
     start = nextStart;
-
   }
 
+  // Deduplicate. When paginating with `start`, the last item of one page
+  // is repeated as the first of the next — the Set handles that.
   return { following: [...new Set(following)], node: activeNode };
 }
 
@@ -171,7 +171,11 @@ async function getAccounts(accounts, preferredNode, onProgress) {
 
   for (let i = 0; i < accounts.length; i += chunkSize) {
     const chunk = accounts.slice(i, i + chunkSize);
-    const { result, node } = await rpcCallWithFallback("condenser_api.get_accounts", [chunk], activeNode);
+    const { result, node } = await rpcCallWithFallback(
+      "condenser_api.get_accounts",
+      [chunk],
+      activeNode
+    );
     activeNode = node;
     all.push(...(Array.isArray(result) ? result : []));
     onProgress?.(`Loading registration dates: ${Math.min(i + chunkSize, accounts.length)} / ${accounts.length}`);
@@ -207,7 +211,7 @@ function buildIcs(events, sourceAccount) {
   }
 
   lines.push("END:VCALENDAR");
-  return lines.join("\\r\\n");
+  return lines.join("\r\n");
 }
 
 function downloadText(filename, text, type = "text/plain;charset=utf-8") {
@@ -221,6 +225,10 @@ function downloadText(filename, text, type = "text/plain;charset=utf-8") {
   anchor.remove();
   URL.revokeObjectURL(url);
 }
+
+/* ------------------------------------------------------------------ */
+/*  Component                                                          */
+/* ------------------------------------------------------------------ */
 
 export default function HiveBirthdayCalendar() {
   const [account, setAccount] = useState("hiveio");
@@ -314,110 +322,159 @@ export default function HiveBirthdayCalendar() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 p-4 text-slate-900 md:p-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <main className="relative min-h-screen overflow-hidden bg-[#0a0608] text-zinc-100 antialiased">
+      {/* Ambient background */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-40 -left-40 h-[34rem] w-[34rem] rounded-full bg-[#E31337]/20 blur-[140px]" />
+        <div className="absolute top-1/3 -right-40 h-[30rem] w-[30rem] rounded-full bg-[#7a0a1c]/25 blur-[150px]" />
+        <div
+          className="absolute inset-0 opacity-[0.04]"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(255,255,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.6) 1px, transparent 1px)",
+            backgroundSize: "44px 44px",
+          }}
+        />
+      </div>
+
+      <div className="relative mx-auto max-w-7xl space-y-6 p-4 md:p-8">
+        {/* Header */}
         <motion.header
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-3xl bg-white p-6 shadow-sm md:p-8"
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-transparent p-7 backdrop-blur-xl md:p-10"
         >
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
             <div>
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-amber-100 px-3 py-1 text-sm font-medium text-amber-800">
-                <CalendarDays className="h-4 w-4" /> Hive Birthday Calendar
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#ff5d72]">
+                <Cake className="h-3.5 w-3.5" /> Hive Blockchain
               </div>
-              <h1 className="text-3xl font-bold tracking-tight md:text-5xl">Hive Birthday Calendar</h1>
-              <p className="mt-3 max-w-3xl text-base text-slate-600 md:text-lg">
-                Enter an account, and the app will scan the profiles it follows, load their Hive registration dates, and display those anniversaries in a clear calendar view.
+              <h1 className="text-4xl font-black leading-[0.95] tracking-tight md:text-6xl">
+                Hive Birthday
+                <span className="block bg-gradient-to-r from-[#E31337] to-[#ff7a5a] bg-clip-text text-transparent">
+                  Calendar
+                </span>
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-base">
+                Enter an account and the app scans the profiles it follows, loads their Hive
+                registration dates, and lays out those anniversaries in a clean calendar view.
               </p>
             </div>
-            <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600">
+            <div className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-medium text-zinc-400">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+              </span>
               GitHub Pages ready
             </div>
           </div>
         </motion.header>
 
-        <Card className="rounded-3xl border-0 shadow-sm">
+        {/* Controls */}
+        <Card>
           <CardContent className="p-5 md:p-6">
             <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr_auto] lg:items-end">
               <label className="space-y-2">
-                <span className="text-sm font-semibold">Hive account</span>
-                <div className="flex rounded-2xl border border-slate-200 bg-white px-3 py-2 focus-within:ring-2 focus-within:ring-amber-400">
-                  <span className="pt-1 text-slate-400">@</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Hive account</span>
+                <div className="flex items-center rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 transition focus-within:border-[#E31337]/50 focus-within:ring-2 focus-within:ring-[#E31337]/30">
+                  <span className="text-zinc-500">@</span>
                   <input
                     value={account}
                     onChange={(event) => setAccount(event.target.value)}
                     placeholder="e.g. hiveio"
-                    className="w-full bg-transparent px-1 py-1 outline-none"
+                    className="w-full bg-transparent px-1 text-zinc-100 placeholder-zinc-600 outline-none"
                     onKeyDown={(event) => event.key === "Enter" && loadData()}
                   />
                 </div>
               </label>
 
               <label className="space-y-2">
-                <span className="text-sm font-semibold">RPC node</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">RPC node</span>
                 <select
                   value={node}
                   onChange={(event) => setNode(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 outline-none focus:ring-2 focus:ring-amber-400"
+                  className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-zinc-100 outline-none transition focus:border-[#E31337]/50 focus:ring-2 focus:ring-[#E31337]/30"
                 >
                   {HIVE_NODES.map((item) => (
-                    <option key={item} value={item}>{item}</option>
+                    <option key={item} value={item} className="bg-[#0a0608]">{item}</option>
                   ))}
                 </select>
               </label>
 
-              <Button onClick={loadData} disabled={loading} className="rounded-2xl px-6 py-6">
+              <Button onClick={loadData} disabled={loading} className="h-[46px] px-7">
                 {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
                 Load calendar
               </Button>
             </div>
 
-            <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <p className="text-sm text-slate-600">{status}</p>
+            <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <p className="flex items-center gap-2 text-sm text-zinc-400">
+                <Activity className="h-3.5 w-3.5 shrink-0 text-[#ff5d72]" />
+                <span className="break-all">{status}</span>
+              </p>
               {events.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={exportIcs} className="rounded-2xl">
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button variant="outline" onClick={exportIcs}>
                     <Download className="mr-2 h-4 w-4" /> Export .ics
                   </Button>
-                  <Button variant="outline" onClick={exportJson} className="rounded-2xl">
+                  <Button variant="outline" onClick={exportJson}>
                     <Download className="mr-2 h-4 w-4" /> Export JSON
                   </Button>
                 </div>
               )}
             </div>
-            {error && <p className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+            {error && (
+              <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                {error}
+              </p>
+            )}
           </CardContent>
         </Card>
 
+        {/* Results */}
         {events.length > 0 && (
           <section className="grid gap-6 lg:grid-cols-[360px_1fr]">
             <div className="space-y-6">
-              <Card className="rounded-3xl border-0 shadow-sm">
+              <Card>
                 <CardContent className="p-5">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-2xl bg-amber-100 p-3 text-amber-700">
+                  <div className="flex items-center gap-4">
+                    <div className="rounded-2xl bg-[#E31337]/15 p-3.5 text-[#ff5d72] ring-1 ring-[#E31337]/30">
                       <Users className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="text-sm text-slate-500">Profiles loaded</p>
-                      <p className="text-3xl font-bold">{events.length}</p>
+                      <p className="text-xs uppercase tracking-wider text-zinc-500">Profiles loaded</p>
+                      <p className="text-3xl font-black tabular-nums">{events.length}</p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              <Card className="rounded-3xl border-0 shadow-sm">
+              <Card>
                 <CardContent className="p-5">
-                  <h2 className="text-lg font-bold">Upcoming Hive birthdays</h2>
-                  <div className="mt-4 space-y-3">
+                  <h2 className="flex items-center gap-2 text-base font-bold">
+                    <Cake className="h-4 w-4 text-[#ff5d72]" /> Upcoming Hive birthdays
+                  </h2>
+                  <div className="mt-4 space-y-2.5">
                     {nextBirthdays.map((event) => (
-                      <div key={event.name} className="rounded-2xl bg-slate-50 p-3">
+                      <div
+                        key={event.name}
+                        className="rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
+                      >
                         <div className="flex items-center justify-between gap-3">
-                          <a className="font-semibold text-amber-700 hover:underline" href={`https://hive.blog/@${event.name}`} target="_blank" rel="noreferrer">@{event.name}</a>
-                          <span className="rounded-full bg-white px-2 py-1 text-xs font-medium text-slate-600">{MONTHS[event.month]} {event.day}</span>
+                          <a
+                            className="font-semibold text-[#ff5d72] hover:underline"
+                            href={`https://hive.blog/@${event.name}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            @{event.name}
+                          </a>
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium tabular-nums text-zinc-300">
+                            {MONTHS[event.month]} {event.day}
+                          </span>
                         </div>
-                        <p className="mt-1 text-sm text-slate-500">Registered: {formatFullDate(event.created)}</p>
+                        <p className="mt-1 text-xs text-zinc-500">Registered: {formatFullDate(event.created)}</p>
                       </div>
                     ))}
                   </div>
@@ -426,35 +483,49 @@ export default function HiveBirthdayCalendar() {
             </div>
 
             <div className="space-y-4">
-              <div className="flex items-center gap-2 rounded-3xl bg-white p-3 shadow-sm">
-                <Search className="ml-2 h-4 w-4 text-slate-400" />
+              <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] p-2.5 backdrop-blur-xl">
+                <Search className="ml-2 h-4 w-4 text-zinc-500" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Filter by username…"
-                  className="w-full bg-transparent p-2 outline-none"
+                  className="w-full bg-transparent p-1.5 text-zinc-100 placeholder-zinc-600 outline-none"
                 />
               </div>
 
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {grouped.map(({ month, events: monthEvents }) => (
-                  <Card key={month} className="rounded-3xl border-0 shadow-sm">
+                  <Card key={month} className="transition hover:border-white/20">
                     <CardContent className="p-5">
                       <div className="mb-4 flex items-center justify-between">
-                        <h2 className="text-xl font-bold">{month}</h2>
-                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{monthEvents.length}</span>
+                        <h2 className="text-lg font-bold tracking-tight">{month}</h2>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold tabular-nums text-zinc-400">
+                          {monthEvents.length}
+                        </span>
                       </div>
                       {monthEvents.length === 0 ? (
-                        <p className="text-sm text-slate-400">No entries</p>
+                        <p className="text-sm text-zinc-600">No entries</p>
                       ) : (
                         <div className="space-y-2">
                           {monthEvents.map((event) => (
-                            <div key={event.name} className="rounded-2xl border border-slate-100 p-3 hover:border-amber-200 hover:bg-amber-50/40">
+                            <div
+                              key={event.name}
+                              className="rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
+                            >
                               <div className="flex items-center justify-between gap-2">
-                                <a className="font-semibold text-slate-900 hover:text-amber-700 hover:underline" href={`https://hive.blog/@${event.name}`} target="_blank" rel="noreferrer">@{event.name}</a>
-                                <span className="text-sm font-bold text-amber-700">{event.day}</span>
+                                <a
+                                  className="font-semibold text-zinc-100 transition hover:text-[#ff5d72] hover:underline"
+                                  href={`https://hive.blog/@${event.name}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  @{event.name}
+                                </a>
+                                <span className="text-sm font-black tabular-nums text-[#ff5d72]">{event.day}</span>
                               </div>
-                              <p className="mt-1 text-xs text-slate-500">Since {event.year} • {formatFullDate(event.created)}</p>
+                              <p className="mt-1 text-xs text-zinc-500">
+                                Since {event.year} • {formatFullDate(event.created)}
+                              </p>
                             </div>
                           ))}
                         </div>

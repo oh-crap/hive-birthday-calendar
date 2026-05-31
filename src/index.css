@@ -1,3 +1,6 @@
+@import "tailwindcss";
+
+@layer base {
 :root {
   --text: #6b6375;
   --text-h: #08060d;
@@ -29,8 +32,6 @@
     font-size: 16px;
   }
 }
-
-@import "tailwindcss";
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -110,4 +111,5 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
 }

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users, Cake, Activity } from "lucide-react";
+import { Download, Loader2, RefreshCcw, Search, Users, Cake, Activity, ChevronLeft, ChevronRight } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
 /*  UI primitives                                                      */
@@ -8,11 +8,11 @@ import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users, Cake, Activ
 
 function Button({ className = "", variant, ...props }) {
   const base =
-    "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold tracking-tight transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#E31337]/60";
+    "group relative inline-flex items-center justify-center gap-2 overflow-hidden rounded-xl px-5 py-2.5 text-sm font-semibold tracking-tight transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#E31337]/60";
   const styles =
     variant === "outline"
-      ? "border border-white/15 bg-white/5 text-zinc-100 hover:bg-white/10 hover:border-white/25 backdrop-blur"
-      : "bg-[#E31337] text-white shadow-[0_8px_24px_-8px_rgba(227,19,55,0.7)] hover:bg-[#ff2a4d] hover:shadow-[0_10px_30px_-8px_rgba(227,19,55,0.85)] active:translate-y-px";
+      ? "border border-white/15 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.09] hover:border-white/30 backdrop-blur"
+      : "bg-gradient-to-b from-[#ff2a4d] to-[#E31337] text-white shadow-[0_8px_24px_-8px_rgba(227,19,55,0.7),0_1px_0_0_rgba(255,255,255,0.25)_inset] hover:shadow-[0_12px_34px_-8px_rgba(227,19,55,0.9),0_1px_0_0_rgba(255,255,255,0.3)_inset] hover:-translate-y-px active:translate-y-0";
   return <button className={`${base} ${styles} ${className}`} {...props} />;
 }
 
@@ -45,7 +45,9 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-let rpcId = 1; // small incremental integer id — fixes the deserialize error
+const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+
+let rpcId = 1; // small incremental integer id — keeps strict nodes happy
 
 function normalizeAccountName(value) {
   return (value || "").trim().toLowerCase().replace(/^@/, "");
@@ -79,13 +81,25 @@ function datePartsUTC(dateString) {
   };
 }
 
+// Account age in whole years from registration date to today (UTC).
+function accountAgeYears(dateString) {
+  const created = new Date(dateString.endsWith("Z") ? dateString : `${dateString}Z`);
+  const now = new Date();
+  let years = now.getUTCFullYear() - created.getUTCFullYear();
+  const monthDiff = now.getUTCMonth() - created.getUTCMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < created.getUTCDate())) {
+    years -= 1;
+  }
+  return Math.max(0, years);
+}
+
 async function rpcCall(node, method, params) {
   const response = await fetch(node, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       jsonrpc: "2.0",
-      id: rpcId++, // small integer, not Date.now()
+      id: rpcId++,
       method,
       params,
     }),
@@ -133,8 +147,6 @@ async function getFollowing(account, preferredNode, onProgress) {
   const limit = 100;
 
   while (true) {
-    // params: [account, start, follow_type, limit]
-    // start MUST be a string ("" for the first page), never null on strict nodes.
     const { result, node } = await rpcCallWithFallback(
       "condenser_api.get_following",
       [account, start, "blog", limit],
@@ -145,10 +157,7 @@ async function getFollowing(account, preferredNode, onProgress) {
     const batch = Array.isArray(result) ? result : [];
     if (batch.length === 0) break;
 
-    const newItems = batch
-      .map((item) => item.following)
-      .filter(Boolean);
-
+    const newItems = batch.map((item) => item.following).filter(Boolean);
     following.push(...newItems);
     onProgress?.(`Followed accounts loaded: ${new Set(following).size}`);
 
@@ -159,8 +168,6 @@ async function getFollowing(account, preferredNode, onProgress) {
     start = nextStart;
   }
 
-  // Deduplicate. When paginating with `start`, the last item of one page
-  // is repeated as the first of the next — the Set handles that.
   return { following: [...new Set(following)], node: activeNode };
 }
 
@@ -227,6 +234,83 @@ function downloadText(filename, text, type = "text/plain;charset=utf-8") {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Month grid (classic 1–31 calendar)                                 */
+/* ------------------------------------------------------------------ */
+
+// Year used only for laying out weekday columns. Anniversaries are
+// day/month recurring, so any common (non-leap) year works for the grid.
+const LAYOUT_YEAR = 2025;
+
+function MonthGrid({ monthIndex, eventsByDay, onSelect, selectedKey }) {
+  // Weekday of the 1st (Mon=0 … Sun=6)
+  const firstDow = (new Date(Date.UTC(LAYOUT_YEAR, monthIndex, 1)).getUTCDay() + 6) % 7;
+  const daysInMonth = new Date(Date.UTC(LAYOUT_YEAR, monthIndex + 1, 0)).getUTCDate();
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const total = Object.values(eventsByDay).reduce((sum, arr) => sum + arr.length, 0);
+
+  return (
+    <Card className="overflow-hidden transition hover:border-white/20">
+      <CardContent className="p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-bold tracking-tight">{MONTHS[monthIndex]}</h3>
+          {total > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-2 py-0.5 text-xs font-bold tabular-nums text-[#ff5d72]">
+              <Cake className="h-3 w-3" /> {total}
+            </span>
+          )}
+        </div>
+
+        <div className="mb-1.5 grid grid-cols-7 gap-1">
+          {WEEKDAYS.map((w) => (
+            <div key={w} className="text-center text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+              {w}
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((day, idx) => {
+            if (day === null) return <div key={`e-${idx}`} className="aspect-square" />;
+            const dayEvents = eventsByDay[day] || [];
+            const has = dayEvents.length > 0;
+            const key = `${monthIndex}-${day}`;
+            const isSelected = selectedKey === key;
+            return (
+              <button
+                key={key}
+                onClick={() => has && onSelect(key)}
+                className={[
+                  "relative flex aspect-square items-center justify-center rounded-lg text-xs font-medium tabular-nums transition",
+                  has
+                    ? "cursor-pointer border border-[#E31337]/40 bg-[#E31337]/15 text-white hover:bg-[#E31337]/30"
+                    : "border border-white/[0.04] text-zinc-600",
+                  isSelected ? "ring-2 ring-[#ff5d72] ring-offset-2 ring-offset-[#0a0608]" : "",
+                ].join(" ")}
+                title={has ? `${dayEvents.length} birthday(s)` : ""}
+              >
+                {day}
+                {has && (
+                  <span className="absolute bottom-1 right-1 inline-flex h-1.5 w-1.5 rounded-full bg-[#ff5d72] shadow-[0_0_6px_rgba(255,93,114,0.9)]" />
+                )}
+                {has && dayEvents.length > 1 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#E31337] px-1 text-[9px] font-bold text-white">
+                    {dayEvents.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -238,16 +322,29 @@ export default function HiveBirthdayCalendar() {
   const [status, setStatus] = useState("Enter a Hive account and load the users it follows.");
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [selectedKey, setSelectedKey] = useState(null);
 
-  const grouped = useMemo(() => {
-    const filtered = events.filter((event) => event.name.includes(normalizeAccountName(query)));
-    return MONTHS.map((month, index) => ({
-      month,
-      events: filtered
-        .filter((event) => event.month === index)
-        .sort((a, b) => a.day - b.day || a.name.localeCompare(b.name)),
-    }));
-  }, [events, query]);
+  const filteredEvents = useMemo(
+    () => events.filter((event) => event.name.includes(normalizeAccountName(query))),
+    [events, query]
+  );
+
+  // Group filtered events by month -> day for the grids.
+  const byMonthDay = useMemo(() => {
+    const map = MONTHS.map(() => ({}));
+    for (const ev of filteredEvents) {
+      const bucket = map[ev.month];
+      (bucket[ev.day] ||= []).push(ev);
+    }
+    return map;
+  }, [filteredEvents]);
+
+  // Events to show in the detail panel (selected day, otherwise upcoming).
+  const selectedEvents = useMemo(() => {
+    if (!selectedKey) return [];
+    const [m, d] = selectedKey.split("-").map(Number);
+    return (byMonthDay[m]?.[d] || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  }, [selectedKey, byMonthDay]);
 
   const nextBirthdays = useMemo(() => {
     const today = new Date();
@@ -260,7 +357,7 @@ export default function HiveBirthdayCalendar() {
         const normalizedB = bKey >= currentKey ? `0-${bKey}` : `1-${bKey}`;
         return normalizedA.localeCompare(normalizedB);
       })
-      .slice(0, 6);
+      .slice(0, 8);
   }, [events]);
 
   async function loadData() {
@@ -273,6 +370,7 @@ export default function HiveBirthdayCalendar() {
     setLoading(true);
     setError("");
     setEvents([]);
+    setSelectedKey(null);
 
     try {
       setStatus(`Loading the list of accounts followed by @${sourceAccount}…`);
@@ -292,12 +390,13 @@ export default function HiveBirthdayCalendar() {
         .map((item) => ({
           name: item.name,
           created: item.created,
+          age: accountAgeYears(item.created),
           ...datePartsUTC(item.created),
         }))
         .sort((a, b) => a.month - b.month || a.day - b.day || a.name.localeCompare(b.name));
 
       setEvents(birthdayEvents);
-      setStatus(`Done: ${birthdayEvents.length} Hive birthdays from accounts followed by @${sourceAccount}. Active RPC node: ${accountsResult.node}`);
+      setStatus(`${birthdayEvents.length} Hive birthdays from accounts followed by @${sourceAccount} · node ${accountsResult.node}`);
     } catch (err) {
       setError(err.message || "An unexpected error occurred.");
       setStatus("Loading failed.");
@@ -321,12 +420,18 @@ export default function HiveBirthdayCalendar() {
     );
   }
 
+  const detailList = selectedEvents.length > 0 ? selectedEvents : nextBirthdays;
+  const detailTitle = selectedEvents.length > 0
+    ? `${MONTHS[Number(selectedKey.split("-")[0])]} ${selectedKey.split("-")[1]}`
+    : "Upcoming Hive birthdays";
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#0a0608] text-zinc-100 antialiased">
       {/* Ambient background */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -top-40 -left-40 h-[34rem] w-[34rem] rounded-full bg-[#E31337]/20 blur-[140px]" />
         <div className="absolute top-1/3 -right-40 h-[30rem] w-[30rem] rounded-full bg-[#7a0a1c]/25 blur-[150px]" />
+        <div className="absolute bottom-0 left-1/3 h-[26rem] w-[26rem] rounded-full bg-[#ff7a5a]/10 blur-[150px]" />
         <div
           className="absolute inset-0 opacity-[0.04]"
           style={{
@@ -345,30 +450,19 @@ export default function HiveBirthdayCalendar() {
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-transparent p-7 backdrop-blur-xl md:p-10"
         >
-          <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
-            <div>
-              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#ff5d72]">
-                <Cake className="h-3.5 w-3.5" /> Hive Blockchain
-              </div>
-              <h1 className="text-4xl font-black leading-[0.95] tracking-tight md:text-6xl">
-                Hive Birthday
-                <span className="block bg-gradient-to-r from-[#E31337] to-[#ff7a5a] bg-clip-text text-transparent">
-                  Calendar
-                </span>
-              </h1>
-              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-base">
-                Enter an account and the app scans the profiles it follows, loads their Hive
-                registration dates, and lays out those anniversaries in a clean calendar view.
-              </p>
-            </div>
-            <div className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-medium text-zinc-400">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-              </span>
-              GitHub Pages ready
-            </div>
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#ff5d72]">
+            <Cake className="h-3.5 w-3.5" /> Hive Blockchain
           </div>
+          <h1 className="text-4xl font-black leading-[0.95] tracking-tight md:text-6xl">
+            Hive Birthday
+            <span className="block bg-gradient-to-r from-[#E31337] to-[#ff7a5a] bg-clip-text text-transparent">
+              Calendar
+            </span>
+          </h1>
+          <p className="mt-4 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-base">
+            Enter an account and the app scans the profiles it follows, loads their Hive
+            registration dates, and plots those anniversaries onto a calendar.
+          </p>
         </motion.header>
 
         {/* Controls */}
@@ -402,8 +496,8 @@ export default function HiveBirthdayCalendar() {
                 </select>
               </label>
 
-              <Button onClick={loadData} disabled={loading} className="h-[46px] px-7">
-                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+              <Button onClick={loadData} disabled={loading} className="h-[46px]">
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 Load calendar
               </Button>
             </div>
@@ -416,10 +510,10 @@ export default function HiveBirthdayCalendar() {
               {events.length > 0 && (
                 <div className="flex shrink-0 flex-wrap gap-2">
                   <Button variant="outline" onClick={exportIcs}>
-                    <Download className="mr-2 h-4 w-4" /> Export .ics
+                    <Download className="h-4 w-4" /> Export .ics
                   </Button>
                   <Button variant="outline" onClick={exportJson}>
-                    <Download className="mr-2 h-4 w-4" /> Export JSON
+                    <Download className="h-4 w-4" /> Export JSON
                   </Button>
                 </div>
               )}
@@ -434,8 +528,9 @@ export default function HiveBirthdayCalendar() {
 
         {/* Results */}
         {events.length > 0 && (
-          <section className="grid gap-6 lg:grid-cols-[360px_1fr]">
-            <div className="space-y-6">
+          <section className="grid gap-6 lg:grid-cols-[380px_1fr]">
+            {/* Sidebar */}
+            <div className="space-y-6 lg:sticky lg:top-6 lg:self-start">
               <Card>
                 <CardContent className="p-5">
                   <div className="flex items-center gap-4">
@@ -453,85 +548,61 @@ export default function HiveBirthdayCalendar() {
               <Card>
                 <CardContent className="p-5">
                   <h2 className="flex items-center gap-2 text-base font-bold">
-                    <Cake className="h-4 w-4 text-[#ff5d72]" /> Upcoming Hive birthdays
+                    <Cake className="h-4 w-4 text-[#ff5d72]" /> {detailTitle}
                   </h2>
+                  {selectedKey && (
+                    <button
+                      onClick={() => setSelectedKey(null)}
+                      className="mt-1 text-xs text-zinc-500 underline-offset-2 hover:text-[#ff5d72] hover:underline"
+                    >
+                      ← back to upcoming
+                    </button>
+                  )}
                   <div className="mt-4 space-y-2.5">
-                    {nextBirthdays.map((event) => (
-                      <div
+                    {detailList.map((event) => (
+                      <a
                         key={event.name}
-                        className="rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
+                        href={`https://hive.blog/@${event.name}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
                       >
-                        <div className="flex items-center justify-between gap-3">
-                          <a
-                            className="font-semibold text-[#ff5d72] hover:underline"
-                            href={`https://hive.blog/@${event.name}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            @{event.name}
-                          </a>
-                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium tabular-nums text-zinc-300">
-                            {MONTHS[event.month]} {event.day}
-                          </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-lg font-bold tracking-tight text-zinc-100">@{event.name}</p>
+                          <p className="text-xs text-zinc-500">{MONTHS[event.month]} {event.day} · {formatFullDate(event.created)}</p>
                         </div>
-                        <p className="mt-1 text-xs text-zinc-500">Registered: {formatFullDate(event.created)}</p>
-                      </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-2xl font-black leading-none tabular-nums text-[#ff5d72]">{event.age}</p>
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-600">yrs</p>
+                        </div>
+                      </a>
                     ))}
                   </div>
                 </CardContent>
               </Card>
             </div>
 
+            {/* Calendar */}
             <div className="space-y-4">
               <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] p-2.5 backdrop-blur-xl">
                 <Search className="ml-2 h-4 w-4 text-zinc-500" />
                 <input
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => { setQuery(event.target.value); setSelectedKey(null); }}
                   placeholder="Filter by username…"
                   className="w-full bg-transparent p-1.5 text-zinc-100 placeholder-zinc-600 outline-none"
                 />
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {grouped.map(({ month, events: monthEvents }) => (
-                  <Card key={month} className="transition hover:border-white/20">
-                    <CardContent className="p-5">
-                      <div className="mb-4 flex items-center justify-between">
-                        <h2 className="text-lg font-bold tracking-tight">{month}</h2>
-                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold tabular-nums text-zinc-400">
-                          {monthEvents.length}
-                        </span>
-                      </div>
-                      {monthEvents.length === 0 ? (
-                        <p className="text-sm text-zinc-600">No entries</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {monthEvents.map((event) => (
-                            <div
-                              key={event.name}
-                              className="rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <a
-                                  className="font-semibold text-zinc-100 transition hover:text-[#ff5d72] hover:underline"
-                                  href={`https://hive.blog/@${event.name}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  @{event.name}
-                                </a>
-                                <span className="text-sm font-black tabular-nums text-[#ff5d72]">{event.day}</span>
-                              </div>
-                              <p className="mt-1 text-xs text-zinc-500">
-                                Since {event.year} • {formatFullDate(event.created)}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {MONTHS.map((_, monthIndex) => (
+                  <MonthGrid
+                    key={monthIndex}
+                    monthIndex={monthIndex}
+                    eventsByDay={byMonthDay[monthIndex]}
+                    onSelect={setSelectedKey}
+                    selectedKey={selectedKey}
+                  />
                 ))}
               </div>
             </div>

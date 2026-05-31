@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Download, Loader2, RefreshCcw, Search, Users, Cake, Activity, ChevronLeft, ChevronRight } from "lucide-react";
+import { Download, Loader2, RefreshCcw, Search, Users, Cake, Activity, ChevronLeft, ChevronRight, Eye, EyeOff } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
 /*  UI primitives                                                      */
@@ -91,6 +91,15 @@ function accountAgeYears(dateString) {
     years -= 1;
   }
   return Math.max(0, years);
+}
+
+// Returns true when the account's last post/comment is older than 6 months.
+function isInactive(lastPostDate) {
+  if (!lastPostDate || lastPostDate.startsWith("1970")) return true;
+  const lp = new Date(lastPostDate.endsWith("Z") ? lastPostDate : `${lastPostDate}Z`);
+  const cutoff = new Date();
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - 6);
+  return lp < cutoff;
 }
 
 async function rpcCall(node, method, params) {
@@ -323,11 +332,17 @@ export default function HiveBirthdayCalendar() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState(null);
+  const [sourceInfo, setSourceInfo] = useState(null);
+  const [hideInactive, setHideInactive] = useState(false);
 
-  const filteredEvents = useMemo(
-    () => events.filter((event) => event.name.includes(normalizeAccountName(query))),
-    [events, query]
-  );
+  const filteredEvents = useMemo(() => {
+    let result = events;
+    if (hideInactive) result = result.filter((event) => !event.inactive);
+    if (query) result = result.filter((event) => event.name.includes(normalizeAccountName(query)));
+    return result;
+  }, [events, query, hideInactive]);
+
+  const inactiveCount = useMemo(() => events.filter((e) => e.inactive).length, [events]);
 
   // Group filtered events by month -> day for the grids.
   const byMonthDay = useMemo(() => {
@@ -371,8 +386,29 @@ export default function HiveBirthdayCalendar() {
     setError("");
     setEvents([]);
     setSelectedKey(null);
+    setSourceInfo(null);
 
     try {
+      // Fetch source account info
+      setStatus(`Looking up @${sourceAccount}…`);
+      const { result: sourceAccounts, node: srcNode } = await rpcCallWithFallback(
+        "condenser_api.get_accounts",
+        [[sourceAccount]],
+        node
+      );
+      setNode(srcNode);
+      const srcData = Array.isArray(sourceAccounts) && sourceAccounts[0];
+      if (!srcData) {
+        setError(`Account @${sourceAccount} not found on the blockchain.`);
+        setStatus("Loading failed.");
+        return;
+      }
+      setSourceInfo({
+        name: srcData.name,
+        created: srcData.created,
+        age: accountAgeYears(srcData.created),
+      });
+
       setStatus(`Loading the list of accounts followed by @${sourceAccount}…`);
       const followingResult = await getFollowing(sourceAccount, node, setStatus);
       setNode(followingResult.node);
@@ -390,6 +426,8 @@ export default function HiveBirthdayCalendar() {
         .map((item) => ({
           name: item.name,
           created: item.created,
+          lastPost: item.last_post || null,
+          inactive: isInactive(item.last_post),
           age: accountAgeYears(item.created),
           ...datePartsUTC(item.created),
         }))
@@ -450,19 +488,21 @@ export default function HiveBirthdayCalendar() {
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-transparent p-7 backdrop-blur-xl md:p-10"
         >
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#ff5d72]">
-            <Cake className="h-3.5 w-3.5" /> Hive Blockchain
+          <div className="flex flex-col items-center text-center">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#E31337]/30 bg-[#E31337]/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#ff5d72]">
+              <Cake className="h-3.5 w-3.5" /> Hive Blockchain
+            </div>
+            <h1 className="text-4xl font-black leading-[0.95] tracking-tight md:text-6xl">
+              Hive Birthday
+              <span className="block bg-gradient-to-r from-[#E31337] to-[#ff7a5a] bg-clip-text text-transparent">
+                Calendar
+              </span>
+            </h1>
+            <p className="mt-4 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-base">
+              Enter an account and the app scans the profiles it follows, loads their Hive
+              registration dates, and plots those anniversaries onto a calendar.
+            </p>
           </div>
-          <h1 className="text-4xl font-black leading-[0.95] tracking-tight md:text-6xl">
-            Hive Birthday
-            <span className="block bg-gradient-to-r from-[#E31337] to-[#ff7a5a] bg-clip-text text-transparent">
-              Calendar
-            </span>
-          </h1>
-          <p className="mt-4 max-w-2xl text-sm leading-relaxed text-zinc-400 md:text-base">
-            Enter an account and the app scans the profiles it follows, loads their Hive
-            registration dates, and plots those anniversaries onto a calendar.
-          </p>
         </motion.header>
 
         {/* Controls */}
@@ -526,6 +566,29 @@ export default function HiveBirthdayCalendar() {
           </CardContent>
         </Card>
 
+        {/* Source account info — shown right below controls */}
+        {sourceInfo && (
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.035] px-5 py-3 backdrop-blur-xl">
+            <div className="flex items-center gap-3">
+              <a
+                href={`https://hive.blog/@${sourceInfo.name}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-lg font-black tracking-tight text-zinc-100 hover:text-[#ff5d72]"
+              >
+                @{sourceInfo.name}
+              </a>
+              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-xs text-zinc-400">
+                Registered {formatFullDate(sourceInfo.created)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-black tabular-nums text-[#ff5d72]">{sourceInfo.age}</span>
+              <span className="text-[10px] uppercase tracking-wider text-zinc-500">yrs on chain</span>
+            </div>
+          </div>
+        )}
+
         {/* Results */}
         {events.length > 0 && (
           <section className="grid gap-6 lg:grid-cols-[380px_1fr]">
@@ -584,15 +647,74 @@ export default function HiveBirthdayCalendar() {
 
             {/* Calendar */}
             <div className="space-y-4">
-              <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] p-2.5 backdrop-blur-xl">
-                <Search className="ml-2 h-4 w-4 text-zinc-500" />
+              <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.035] p-2.5 backdrop-blur-xl">
+                <Search className="ml-2 h-4 w-4 shrink-0 text-zinc-500" />
                 <input
                   value={query}
                   onChange={(event) => { setQuery(event.target.value); setSelectedKey(null); }}
                   placeholder="Filter by username…"
-                  className="w-full bg-transparent p-1.5 text-zinc-100 placeholder-zinc-600 outline-none"
+                  className="min-w-0 flex-1 bg-transparent p-1.5 text-zinc-100 placeholder-zinc-600 outline-none"
                 />
+                {query && (
+                  <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-xs tabular-nums text-zinc-400">
+                    {filteredEvents.length} result{filteredEvents.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+                {inactiveCount > 0 && (
+                  <button
+                    onClick={() => { setHideInactive((v) => !v); setSelectedKey(null); }}
+                    className={[
+                      "inline-flex shrink-0 items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition",
+                      hideInactive
+                        ? "border-[#E31337]/40 bg-[#E31337]/15 text-[#ff5d72]"
+                        : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:text-zinc-300",
+                    ].join(" ")}
+                    title={hideInactive ? "Show all accounts" : "Hide accounts inactive for 6+ months"}
+                  >
+                    {hideInactive ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    {hideInactive ? "Inactive hidden" : "Hide inactive"}
+                    <span className={[
+                      "rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums",
+                      hideInactive ? "bg-[#E31337]/30 text-[#ff5d72]" : "bg-white/10 text-zinc-500",
+                    ].join(" ")}>
+                      {inactiveCount}
+                    </span>
+                  </button>
+                )}
               </div>
+
+              {/* Filtered results list */}
+              {query && filteredEvents.length > 0 && (
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                      {filteredEvents.slice(0, 30).map((event) => (
+                        <a
+                          key={event.name}
+                          href={`https://hive.blog/@${event.name}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-[#E31337]/30 hover:bg-[#E31337]/[0.06]"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-base font-bold tracking-tight text-zinc-100">@{event.name}</p>
+                            <p className="text-xs text-zinc-500">{formatFullDate(event.created)}</p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p className="text-xl font-black leading-none tabular-nums text-[#ff5d72]">{event.age}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-zinc-600">yrs</p>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                    {filteredEvents.length > 30 && (
+                      <p className="mt-3 text-center text-xs text-zinc-500">
+                        Showing 30 of {filteredEvents.length} results — refine your search to see more.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
 
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {MONTHS.map((_, monthIndex) => (

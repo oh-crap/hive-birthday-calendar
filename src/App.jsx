@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { CalendarDays, Download, Github, Loader2, RefreshCcw, Search, Users } from "lucide-react";
+import { CalendarDays, Download, Loader2, RefreshCcw, Search, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -304,7 +304,7 @@ export default function HiveBirthdayCalendar() {
               </p>
             </div>
             <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-600">
-              <Github className="h-4 w-4" /> GitHub Pages ready
+              GitHub Pages ready
             </div>
           </div>
         </motion.header>
